@@ -7,6 +7,7 @@
 #include "common.h"
 #include "vm.h"
 #include "debug.h"
+#include "compiler.h"
 
 
 static void resetStack(VM* vm) {
@@ -82,10 +83,9 @@ static InterpretResult run(VM* vm) {
 #undef BINARY_OP
 }
 
-InterpretResult interpret(VM* vm, Chunk* chunk) {
-    vm->chunk = chunk;
-    vm->ip = vm->chunk->code;
-    return run(vm);
+InterpretResult interpret(VM* vm, const char* source) {
+    compile(source);
+    return INTERPRET_OK;
 }
 
 void push(VM* vm, Value value) {
