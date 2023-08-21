@@ -15,6 +15,6 @@ typedef struct {
     bool panicMode;
 } Parser;
 
-bool compile(const char* source, Chunk* chunk);
+bool compile(VM* vm, const char* source, Chunk* chunk);
 
 #endif //CLOX_COMPILER_H
