@@ -131,7 +131,10 @@ static TokenType identifierType(Scanner* scanner) {
                     case 'r': return checkKeyword(scanner, 2, 2, "ue", TOKEN_TRUE);
                 }
             }
+        default:
+            ; // Nothing to check.
     }
+    return TOKEN_IDENTIFIER;
 }
 
 static Token identifier(Scanner* scanner) {

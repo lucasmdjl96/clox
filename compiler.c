@@ -26,7 +26,7 @@ typedef enum {
     PREC_PRIMARY,
 } Precedence;
 
-typedef void (*ParseFn)(VM*, Parser*, Scanner*, Chunk*);
+typedef void (*ParseFn)(VM*, Parser*, Scanner*, Chunk*, bool);
 
 typedef struct {
     ParseFn prefix;
@@ -79,6 +79,16 @@ static void consume(Parser* parser, Scanner* scanner, TokenType type, const char
     errorArCurrent(parser, message);
 }
 
+static bool check(Parser* parser, TokenType type) {
+    return parser->current.type == type;
+}
+
+static bool match(Parser* parser, Scanner* scanner, TokenType type) {
+    if (!check(parser, type)) return false;
+    advance(parser, scanner);
+    return true;
+}
+
 static void emitByte(Parser* parser, Chunk* currentChunk, uint8_t byte) {
     writeChunk(currentChunk, byte, parser->previous.line);
 }
@@ -118,8 +128,10 @@ static void endCompiler(Parser* parser, Chunk* currentChunk) {
 static void parsePrecedence(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, Precedence precedence);
 static ParseRule* getRule(TokenType type);
 static void expression(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk);
+static void statement(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk);
+static void declaration(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk);
 
-static void binary(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+static void binary(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     TokenType operatorType = parser->previous.type;
     ParseRule* rule = getRule(operatorType);
     parsePrecedence(vm, parser, scanner, currentChunk, (Precedence)(rule->precedence + 1));
@@ -160,7 +172,7 @@ static void binary(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk
     }
 }
 
-static void literal(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+static void literal(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     switch (parser->previous.type) {
         case TOKEN_FALSE:
             emitByte(parser, currentChunk, OP_FALSE);
@@ -176,22 +188,41 @@ static void literal(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChun
     }
 }
 
-static void grouping(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+static void grouping(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     expression(vm, parser, scanner, currentChunk);
     consume(parser, scanner, TOKEN_RIGHT_PAREN, "Expect ')' after expression.");
 }
 
-static void number(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+static void number(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     double value = strtod(parser->previous.start, NULL);
     emitConstant(parser, currentChunk, NUMBER_VAL(value));
 }
 
-static void string(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+static void string(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     emitConstant(parser, currentChunk, OBJ_VAL(copyString(vm, parser->previous.start + 1,
                                                           parser->previous.length - 2)));
 }
 
-static void unary(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+static uint8_t identifierConstant(VM* vm, Parser* parser, Chunk* currentChunk, Token* name) {
+    return makeConstant(parser, currentChunk, OBJ_VAL(copyString(vm, name->start, name->length)));
+}
+
+static void namedVariable(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, Token name, bool canAssign) {
+    uint8_t arg = identifierConstant(vm, parser, currentChunk, &name);
+
+    if (canAssign && match(parser, scanner, TOKEN_EQUAL)) {
+        expression(vm, parser, scanner, currentChunk);
+        emitBytes(parser, currentChunk, OP_SET_GLOBAL, arg);
+    } else {
+        emitBytes(parser, currentChunk, OP_GET_GLOBAL, arg);
+    }
+}
+
+static void variable(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
+    namedVariable(vm, parser, scanner, currentChunk, parser->previous, canAssign);
+}
+
+static void unary(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     TokenType  operatorType = parser->previous.type;
 
     // Compile the operand.
@@ -230,7 +261,7 @@ ParseRule rules[] = {
     [TOKEN_GREATER_EQUAL] = {NULL, binary, PREC_COMPARISON},
     [TOKEN_LESS] = {NULL, binary, PREC_COMPARISON},
     [TOKEN_LESS_EQUAL] = {NULL, binary, PREC_COMPARISON},
-    [TOKEN_IDENTIFIER] = {NULL, NULL, PREC_NONE},
+    [TOKEN_IDENTIFIER] = {variable, NULL, PREC_NONE},
     [TOKEN_STRING] = {string, NULL, PREC_NONE},
     [TOKEN_NUMBER] = {number, NULL, PREC_NONE},
     [TOKEN_AND] = {NULL, NULL, PREC_NONE},
@@ -261,13 +292,28 @@ static void parsePrecedence(VM* vm, Parser* parser, Scanner* scanner, Chunk* cur
         return;
     }
 
-    prefixRule(vm, parser, scanner, currentChunk);
+    bool canAssign = precedence <= PREC_ASSIGNEMENT;
+    prefixRule(vm, parser, scanner, currentChunk, canAssign);
 
     while (precedence <= getRule(parser->current.type)->precedence) {
         advance(parser, scanner);
         ParseFn infixRule = getRule(parser->previous.type)->infix;
-        infixRule(vm, parser, scanner, currentChunk);
+        infixRule(vm, parser, scanner, currentChunk, canAssign);
     }
+
+    if (canAssign && match(parser, scanner, TOKEN_EQUAL)) {
+        error(parser, "Invalid assignment target.");
+    }
+}
+
+
+static uint8_t parseVariable(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk, const char* errorMessage) {
+    consume(parser, scanner, TOKEN_IDENTIFIER, errorMessage);
+    return identifierConstant(vm, parser, currentChunk, &parser->previous);
+}
+
+static void defineVariable(Parser* parser, Chunk* currentChunk, uint8_t global) {
+    emitBytes(parser, currentChunk, OP_DEFINE_GLOBAL, global);
 }
 
 static ParseRule* getRule(TokenType type) {
@@ -283,6 +329,73 @@ static void expression(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentC
     parsePrecedence(vm, parser, scanner, currentChunk, PREC_ASSIGNEMENT);
 }
 
+static void varDeclaration(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    uint8_t global = parseVariable(vm, parser, scanner, currentChunk, "Expect variable name.");
+
+    if (match(parser, scanner, TOKEN_EQUAL)) {
+        expression(vm, parser, scanner, currentChunk);
+    } else {
+        emitByte(parser, currentChunk, OP_NIL);
+    }
+    consume(parser, scanner, TOKEN_SEMICOLON, "Expect ';' after variable declaration.");
+
+    defineVariable(parser, currentChunk, global);
+}
+
+static void expressionStatement(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    expression(vm, parser, scanner, currentChunk);
+    consume(parser, scanner, TOKEN_SEMICOLON, "Expect ';' after expression.");
+    emitByte(parser, currentChunk, OP_POP);
+}
+
+static void printStatement(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    expression(vm, parser, scanner, currentChunk);
+    consume(parser, scanner, TOKEN_SEMICOLON, "Expect ';' after value.");
+    emitByte(parser, currentChunk, OP_PRINT);
+}
+
+static void synchronize(Parser* parser, Scanner* scanner) {
+    parser->panicMode = false;
+
+    while (parser->current.type != TOKEN_EOF) {
+        if (parser->previous.type == TOKEN_SEMICOLON) return;
+        switch (parser->current.type) {
+            case TOKEN_CLASS:
+            case TOKEN_FUN:
+            case TOKEN_VAR:
+            case TOKEN_FOR:
+            case TOKEN_IF:
+            case TOKEN_WHILE:
+            case TOKEN_PRINT:
+            case TOKEN_RETURN:
+                return;
+
+            default:
+                ; // Do nothing.
+        }
+
+        advance(parser, scanner);
+    }
+}
+
+static void declaration(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    if (match(parser, scanner, TOKEN_VAR)) {
+        varDeclaration(vm, parser, scanner, currentChunk);
+    } else {
+        statement(vm, parser, scanner, currentChunk);
+    }
+
+    if (parser->panicMode) synchronize(parser, scanner);
+}
+
+static void statement(VM* vm, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    if (match(parser, scanner, TOKEN_PRINT)) {
+        printStatement(vm, parser, scanner, currentChunk);
+    } else {
+        expressionStatement(vm, parser, scanner, currentChunk);
+    }
+}
+
 bool compile(VM* vm, const char* source, Chunk* chunk) {
     Scanner scanner;
     initScanner(&scanner, source);
@@ -291,8 +404,11 @@ bool compile(VM* vm, const char* source, Chunk* chunk) {
     Parser parser;
     initParser(&parser);
     advance(&parser, &scanner);
-    expression(vm, &parser, &scanner, currentChunk);
-    consume(&parser, &scanner, TOKEN_EOF, "Expect end of expression.");
+
+    while (!match(&parser, &scanner, TOKEN_EOF)) {
+        declaration(vm, &parser, &scanner, currentChunk);
+    }
+
     endCompiler(&parser, currentChunk);
     return !parser.hadError;
 }
