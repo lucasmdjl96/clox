@@ -103,6 +103,23 @@ static void emitBytes(Parser* parser, Chunk* currentChunk, uint8_t byte1, uint8_
     emitByte(parser, currentChunk, byte2);
 }
 
+static int emitLoop(Parser* parser, Chunk* currentChunk, int loopStart) {
+    emitByte(parser, currentChunk, OP_LOOP);
+
+    int offset = currentChunk->count - loopStart + 2;
+    if (offset > UINT16_MAX) error(parser, "Loop body too large.");
+
+    emitByte(parser, currentChunk, (offset >> 8) & 0xff);
+    emitByte(parser, currentChunk, offset & 0xff);
+}
+
+static int emitJump(Parser* parser, Chunk* currentChunk, uint8_t instruction) {
+    emitByte(parser, currentChunk, instruction);
+    emitByte(parser, currentChunk, 0xff);
+    emitByte(parser, currentChunk, 0xff);
+    return currentChunk->count - 2;
+}
+
 static uint8_t makeConstant(Parser* parser, Chunk* currentChunk, Value value) {
     int constant = addConstant(currentChunk, value);
     if (constant > UINT8_MAX) {
@@ -115,6 +132,19 @@ static uint8_t makeConstant(Parser* parser, Chunk* currentChunk, Value value) {
 
 static void emitConstant(Parser* parser, Chunk* currentChunk, Value value) {
     emitBytes(parser, currentChunk, OP_CONSTANT, makeConstant(parser, currentChunk, value));
+}
+
+static void patchJump(Parser* parser, Chunk* currentChunk, int offset) {
+    // -2 to adjust for the bytecode for the jump offset itself.
+    int jump = currentChunk->count - offset - 2;
+
+    if (jump > UINT16_MAX) {
+        error(parser, "Too much code to jump over.");
+    }
+
+    currentChunk->code[offset] = (jump >> 8) & 0xff;
+    currentChunk->code[offset + 1] = jump & 0xff;
+
 }
 
 static void initCompiler(Compiler* compiler) {
@@ -216,6 +246,26 @@ static void grouping(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanne
 static void number(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
     double value = strtod(parser->previous.start, NULL);
     emitConstant(parser, currentChunk, NUMBER_VAL(value));
+}
+
+static void or_(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
+    int elseJump = emitJump(parser, currentChunk, OP_JUMP_IF_FALSE);
+    int endJump = emitJump(parser, currentChunk, OP_JUMP);
+
+    patchJump(parser, currentChunk,elseJump);
+    emitByte(parser, currentChunk, OP_POP);
+
+    parsePrecedence(vm, compiler, parser, scanner, currentChunk, PREC_OR);
+    patchJump(parser, currentChunk, endJump);
+}
+
+static void and_(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
+    int endJump = emitJump(parser, currentChunk, OP_JUMP_IF_FALSE);
+
+    emitByte(parser, currentChunk, OP_POP);
+    parsePrecedence(vm, compiler, parser, scanner, currentChunk, PREC_AND);
+
+    patchJump(parser, currentChunk, endJump);
 }
 
 static void string(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk, bool canAssign) {
@@ -341,7 +391,7 @@ ParseRule rules[] = {
     [TOKEN_IDENTIFIER] = {variable, NULL, PREC_NONE},
     [TOKEN_STRING] = {string, NULL, PREC_NONE},
     [TOKEN_NUMBER] = {number, NULL, PREC_NONE},
-    [TOKEN_AND] = {NULL, NULL, PREC_NONE},
+    [TOKEN_AND] = {NULL, and_, PREC_NONE},
     [TOKEN_CLASS] = {NULL, NULL, PREC_NONE},
     [TOKEN_ELSE] = {NULL, NULL, PREC_NONE},
     [TOKEN_FALSE] = {literal, NULL, PREC_NONE},
@@ -349,7 +399,7 @@ ParseRule rules[] = {
     [TOKEN_FUN] = {NULL, NULL, PREC_NONE},
     [TOKEN_IF] = {NULL, NULL, PREC_NONE},
     [TOKEN_NIL] = {literal, NULL, PREC_NONE},
-    [TOKEN_OR] = {NULL, NULL, PREC_NONE},
+    [TOKEN_OR] = {NULL, or_, PREC_NONE},
     [TOKEN_PRINT] = {NULL, NULL, PREC_NONE},
     [TOKEN_RETURN] = {NULL, NULL, PREC_NONE},
     [TOKEN_SUPER] = {NULL, NULL, PREC_NONE},
@@ -445,10 +495,89 @@ static void expressionStatement(VM* vm, Compiler* compiler, Parser* parser, Scan
     emitByte(parser, currentChunk, OP_POP);
 }
 
+static void forStatement(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    beginScope(compiler);
+    consume(parser, scanner, TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
+    if (match(parser, scanner, TOKEN_SEMICOLON)) {
+        // No initializer.
+    } else if (match(parser, scanner, TOKEN_VAR)) {
+        varDeclaration(vm, compiler, parser, scanner, currentChunk);
+    } else {
+        expressionStatement(vm, compiler, parser, scanner, currentChunk);
+    }
+
+    int loopStart = currentChunk->count;
+
+    int exitJump = -1;
+    if (!match(parser, scanner, TOKEN_SEMICOLON)) {
+        expression(vm, compiler, parser, scanner, currentChunk);
+        consume(parser, scanner, TOKEN_SEMICOLON, "Expect ';' after loop condition.");
+
+        // Jump out of the loop if the condition is false.
+        exitJump = emitJump(parser, currentChunk, OP_JUMP_IF_FALSE);
+        emitByte(parser, currentChunk, OP_POP);
+    }
+
+    if (!match(parser, scanner, TOKEN_RIGHT_PAREN)) {
+        int bodyJump = emitJump(parser, currentChunk, OP_JUMP);
+        int incrementStart = currentChunk->count;
+        expression(vm, compiler, parser, scanner, currentChunk);
+        emitByte(parser, currentChunk, OP_POP);
+        consume(parser, scanner, TOKEN_RIGHT_PAREN, "Expect ')' after for clauses.");
+
+        emitLoop(parser, currentChunk, loopStart);
+        loopStart = incrementStart;
+        patchJump(parser, currentChunk, bodyJump);
+    }
+
+    statement(vm, compiler, parser, scanner, currentChunk);
+    emitLoop(parser, currentChunk, loopStart);
+
+    if (exitJump != -1) {
+        patchJump(parser, currentChunk, exitJump);
+        emitByte(parser, currentChunk, OP_POP);
+    }
+
+    endScope(compiler, parser, currentChunk);
+}
+
+static void ifStatement(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    consume(parser, scanner, TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
+    expression(vm, compiler, parser, scanner, currentChunk);
+    consume(parser, scanner, TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+
+    int thenJump = emitJump(parser, currentChunk, OP_JUMP_IF_FALSE);
+    emitByte(parser, currentChunk, OP_POP);
+    statement(vm, compiler, parser, scanner, currentChunk);
+
+    int elseJump = emitJump(parser, currentChunk, OP_JUMP);
+
+    patchJump(parser, currentChunk, thenJump);
+
+    emitByte(parser, currentChunk, OP_POP);
+    if (match(parser, scanner, TOKEN_ELSE)) statement(vm , compiler, parser, scanner, currentChunk);
+    patchJump(parser, currentChunk, elseJump);
+}
+
 static void printStatement(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
     expression(vm, compiler, parser, scanner, currentChunk);
     consume(parser, scanner, TOKEN_SEMICOLON, "Expect ';' after value.");
     emitByte(parser, currentChunk, OP_PRINT);
+}
+
+static void whileStatement(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
+    int loopStart = currentChunk->count;
+    consume(parser, scanner, TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
+    expression(vm, compiler, parser, scanner, currentChunk);
+    consume(parser, scanner, TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+
+    int exitJump = emitJump(parser, currentChunk, OP_JUMP_IF_FALSE);
+    emitByte(parser, currentChunk, OP_POP);
+    statement(vm, compiler, parser, scanner, currentChunk);
+    emitLoop(parser, currentChunk, loopStart);
+
+    patchJump(parser, currentChunk, exitJump);
+    emitByte(parser, currentChunk, OP_POP);
 }
 
 static void synchronize(Parser* parser, Scanner* scanner) {
@@ -488,6 +617,12 @@ static void declaration(VM* vm, Compiler* compiler, Parser* parser, Scanner* sca
 static void statement(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, Chunk* currentChunk) {
     if (match(parser, scanner, TOKEN_PRINT)) {
         printStatement(vm, compiler, parser, scanner, currentChunk);
+    } else if (match(parser, scanner, TOKEN_FOR)) {
+        forStatement(vm, compiler, parser, scanner, currentChunk);
+    } else if (match(parser, scanner, TOKEN_IF)) {
+        ifStatement(vm, compiler, parser, scanner, currentChunk);
+    } else if (match(parser, scanner, TOKEN_WHILE)) {
+        whileStatement(vm, compiler, parser, scanner, currentChunk);
     } else if (match(parser, scanner, TOKEN_LEFT_BRACE)) {
         beginScope(compiler);
         block(vm, compiler, parser, scanner, currentChunk);
