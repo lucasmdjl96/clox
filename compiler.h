@@ -7,6 +7,7 @@
 
 #include "vm.h"
 #include "scanner.h"
+#include "object.h"
 
 typedef struct {
     Token current;
@@ -20,12 +21,20 @@ typedef struct {
     int depth;
 } Local;
 
+typedef enum {
+    TYPE_FUNCTION,
+    TYPE_SCRIPT,
+} FunctionType;
+
 typedef struct {
+    ObjFunction* function;
+    FunctionType type;
+
     Local locals[UINT8_COUNT];
     int localCount;
     int scopeDepth;
 } Compiler;
 
-bool compile(VM* vm, const char* source, Chunk* chunk);
+ObjFunction* compile(VM* vm, const char* source);
 
 #endif //CLOX_COMPILER_H
