@@ -153,7 +153,8 @@ static void patchJump(Parser* parser, Chunk* currentChunk, int offset) {
 
 }
 
-static void initCompiler(VM* vm, Compiler* compiler, Parser* parser, FunctionType type) {
+static void initCompiler(VM* vm, Compiler* current, Compiler* compiler, Parser* parser, FunctionType type) {
+    compiler->enclosing = current;
     compiler->function = NULL;
     compiler->type = type;
     compiler->localCount = 0;
@@ -165,6 +166,7 @@ static void initCompiler(VM* vm, Compiler* compiler, Parser* parser, FunctionTyp
 
     Local* local = &compiler->locals[compiler->localCount++];
     local->depth = 0;
+    local->isCaptured = false;
     local->name.start = "";
     local->name.length = 0;
 }
@@ -192,7 +194,11 @@ static void endScope(Compiler* compiler, Parser* parser) {
 
     while (compiler->localCount > 0 &&
         compiler->locals[compiler->localCount - 1].depth > compiler->scopeDepth) {
-        emitByte(parser, currentChunk(compiler), OP_POP);
+        if (compiler->locals[compiler->localCount - 1].isCaptured) {
+            emitByte(parser, currentChunk(compiler), OP_CLOSE_UPVALUE);
+        } else {
+            emitByte(parser, currentChunk(compiler), OP_POP);
+        }
         compiler->localCount--;
     }
 }
@@ -326,15 +332,54 @@ static int resolveLocal(Compiler* compiler, Parser* parser, Token* name) {
     return -1;
 }
 
+static int addUpvalue(Compiler* compiler, Parser* parser, uint8_t index, bool isLocal) {
+    int upvalueCount = compiler->function->upvalueCount;
+
+    for (int i = 0; i < upvalueCount; i++) {
+        Upvalue* upvalue = &compiler->upvalues[i];
+        if (upvalue->index == index && upvalue->isLocal == isLocal) {
+            return i;
+        }
+    }
+
+    if (upvalueCount == UINT8_COUNT) {
+        error(parser, "Too many closure variables in function.");
+        return 0;
+    }
+
+    compiler->upvalues[upvalueCount].isLocal = isLocal;
+    compiler->upvalues[upvalueCount].index = index;
+    return compiler->function->upvalueCount++;
+
+}
+
+static int resolveUpvalue(Compiler* compiler, Parser* parser, Token* name) {
+    if (compiler->enclosing == NULL) return -1;
+
+    int local = resolveLocal(compiler->enclosing, parser, name);
+    if (local != -1) {
+        compiler->enclosing->locals[local].isCaptured = true;
+        return addUpvalue(compiler, parser, (uint8_t)local, true);
+    }
+
+    int upvalue = resolveUpvalue(compiler->enclosing, parser, name);
+    if (upvalue != -1) {
+        return addUpvalue(compiler, parser, (uint8_t)upvalue, false);
+    }
+
+    return -1;
+}
+
 static void addLocal(Compiler* compiler, Parser* parser, Token name) {
     if (compiler->localCount == UINT8_COUNT) {
-        error(parser, "Too many local variables in function.");
+        error(parser, "Too many local variables in closure.");
         return;
     }
 
     Local* local = &compiler->locals[compiler->localCount++];
     local->name = name;
     local->depth = -1;
+    local->isCaptured = false;
 }
 
 static void declareVariable(Compiler* compiler, Parser* parser) {
@@ -361,6 +406,9 @@ static void namedVariable(VM* vm, Compiler* compiler, Parser* parser, Scanner* s
     if (arg != -1) {
         getOp = OP_GET_LOCAL;
         setOp = OP_SET_LOCAL;
+    } else if ((arg = resolveUpvalue(compiler, parser, &name)) != -1) {
+        getOp = OP_GET_UPVALUE;
+        setOp = OP_SET_UPVALUE;
     } else {
         arg = identifierConstant(vm, parser, currentChunk(compiler), &name);
         getOp = OP_GET_GLOBAL;
@@ -524,10 +572,10 @@ static void block(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner) 
 
 static void function(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, FunctionType type) {
     Compiler newCompiler;
-    initCompiler(vm, &newCompiler, parser, type);
+    initCompiler(vm, compiler, &newCompiler, parser, type);
     beginScope(&newCompiler);
 
-    consume(parser, scanner, TOKEN_LEFT_PAREN, "Expect '(' after function name.");
+    consume(parser, scanner, TOKEN_LEFT_PAREN, "Expect '(' after closure name.");
     if (!check(parser, TOKEN_RIGHT_PAREN)) {
         do {
             newCompiler.function->arity++;
@@ -539,15 +587,21 @@ static void function(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanne
         } while (match(parser, scanner, TOKEN_COMMA));
     }
     consume(parser, scanner, TOKEN_RIGHT_PAREN, "Expect ')' after parameters.");
-    consume(parser, scanner, TOKEN_LEFT_BRACE, "Expect '{' before function body.");
+    consume(parser, scanner, TOKEN_LEFT_BRACE, "Expect '{' before closure body.");
     block(vm, &newCompiler, parser, scanner);
 
     ObjFunction* function = endCompiler(&newCompiler, parser);
-    emitBytes(parser, currentChunk(compiler), OP_CONSTANT, makeConstant(parser, currentChunk(compiler), OBJ_VAL(function)));
+    Chunk* chunk = currentChunk(compiler);
+    emitBytes(parser, chunk, OP_CLOSURE, makeConstant(parser, chunk, OBJ_VAL(function)));
+
+    for (int i = 0; i < function->upvalueCount; i++) {
+        emitByte(parser, chunk, newCompiler.upvalues[i].isLocal ? 1 : 0);
+        emitByte(parser, chunk, newCompiler.upvalues[i].index);
+    }
 }
 
 static void funDeclaration(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner) {
-    uint8_t global = parseVariable(vm, compiler, parser, scanner, "Expect function name.");
+    uint8_t global = parseVariable(vm, compiler, parser, scanner, "Expect closure name.");
     markInitialized(compiler);
     function(vm, compiler, parser, scanner, TYPE_FUNCTION);
     defineVariable(compiler, parser, global);
@@ -739,7 +793,7 @@ ObjFunction* compile(VM* vm, const char* source) {
     advance(&parser, &scanner);
 
     Compiler compiler;
-    initCompiler(vm, &compiler, &parser, TYPE_SCRIPT);
+    initCompiler(vm, NULL, &compiler, &parser, TYPE_SCRIPT);
 
     while (!match(&parser, &scanner, TOKEN_EOF)) {
         declaration(vm, &compiler, &parser, &scanner);
