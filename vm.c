@@ -8,8 +8,6 @@
 #include <time.h>
 
 #include "common.h"
-#include "object_vm.h"
-#include "debug.h"
 #include "compiler.h"
 #include "object.h"
 #include "memory.h"
@@ -43,10 +41,10 @@ static void runtimeError(VM* vm, const char* format, ...) {
     resetStack(vm);
 }
 
-static void defineNative(VM* vm, const char* name, NativeFn function, int arity) {
-    push(vm, OBJ_VAL(copyString(vm, name, (int) strlen(name))));
-    push(vm, OBJ_VAL(newNative(vm, function, arity)));
-    tableSet(&vm->globals, AS_STRING(vm->stack[0]), vm->stack[1]);
+static void defineNative(VM* vm, Compiler* compiler, const char* name, NativeFn function, int arity) {
+    push(vm, OBJ_VAL(copyString(vm, compiler, name, (int) strlen(name))));
+    push(vm, OBJ_VAL(newNative(vm, compiler, function, arity)));
+    tableSet(vm, compiler, &vm->globals, AS_STRING(vm->stack[0]), vm->stack[1]);
     pop(vm);
     pop(vm);
 }
@@ -58,16 +56,25 @@ static Value clockNative(int argCount, Value* args) {
 void initVM(VM* vm) {
     resetStack(vm);
     vm->objects = NULL;
+    vm->bytesAllocated = 0;
+    vm->nextGC = 1024 * 1024;
+
+    vm->grayCount = 0;
+    vm->grayCapacity = 0;
+    vm->grayStack = NULL;
+
     initTable(&vm->strings);
     initTable(&vm->globals);
-
-    defineNative(vm, "clock", clockNative, 0);
 }
 
-void freeVM(VM* vm) {
-    freeTable(&vm->strings);
-    freeTable(&vm->globals);
-    freeObjects(vm);
+void defineClockNative(VM* vm, Compiler* compiler) {
+    defineNative(vm, compiler, "clock", clockNative, 0);
+}
+
+void freeVM(VM* vm, Compiler* compiler) {
+    freeTable(vm, compiler, &vm->strings);
+    freeTable(vm, compiler, &vm->globals);
+    freeObjects(vm, compiler);
 }
 
 static Value peek(VM* vm, int distance) {
@@ -116,7 +123,7 @@ static bool callValue(VM* vm, Value callee, int argCount) {
     return false;
 }
 
-static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
+static ObjUpvalue* captureUpvalue(VM* vm, Compiler* compiler, Value* local) {
     ObjUpvalue* prevUpvalue = NULL;
     ObjUpvalue* upvalue = vm->openUpvalues;
     while (upvalue != NULL && upvalue->location > local) {
@@ -128,7 +135,7 @@ static ObjUpvalue* captureUpvalue(VM* vm, Value* local) {
         return upvalue;
     }
 
-    ObjUpvalue* createdUpvalue = newUpvalue(vm, local);
+    ObjUpvalue* createdUpvalue = newUpvalue(vm, compiler, local);
     createdUpvalue->next = upvalue;
 
     if (prevUpvalue == NULL) {
@@ -153,9 +160,9 @@ static bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
 
-static void concatenate(VM* vm) {
-    ObjString* b = AS_STRING(pop(vm));
-    ObjString* a = AS_STRING(pop(vm));
+static void concatenate(VM* vm, Compiler* compiler) {
+    ObjString* b = AS_STRING(peek(vm, 0));
+    ObjString* a = AS_STRING(peek(vm, 0));
 
     int length = a->length + b->length;
     char* chars = ALLOCATE(char, length + 1);
@@ -163,11 +170,13 @@ static void concatenate(VM* vm) {
     memcpy(chars + a->length, b->chars, b->length);
     chars[length] = '\0';
 
-    ObjString* result = takeString(vm, chars, length);
+    ObjString* result = takeString(vm, compiler, chars, length);
+    pop(vm);
+    pop(vm);
     push(vm, OBJ_VAL(result));
 }
 
-static InterpretResult run(VM* vm) {
+static InterpretResult run(VM* vm, Compiler* compiler) {
     CallFrame* frame = &vm->frames[vm->frameCount - 1];
 
 #define READ_BYTE() (*frame->ip++)
@@ -237,13 +246,13 @@ static InterpretResult run(VM* vm) {
             }
             case OP_DEFINE_GLOBAL: {
                 ObjString* name = READ_STRING();
-                tableSet(&vm->globals, name, peek(vm, 0));
+                tableSet(vm, compiler, &vm->globals, name, peek(vm, 0));
                 pop(vm);
                 break;
             }
             case OP_SET_GLOBAL: {
                 ObjString* name = READ_STRING();
-                if (tableSet(&vm->globals, name, peek(vm, 0))) {
+                if (tableSet(vm, compiler, &vm->globals, name, peek(vm, 0))) {
                     tableDelete(&vm->globals, name);
                     runtimeError(vm, "Undefined variable '%s'.", name->chars);
                     return INTERPRET_RUNTIME_ERROR;
@@ -274,7 +283,7 @@ static InterpretResult run(VM* vm) {
                 break;
             case OP_ADD: {
                 if (IS_STRING(peek(vm, 0)) && IS_STRING(peek(vm, 1))) {
-                    concatenate(vm);
+                    concatenate(vm, compiler);
                 } else if (IS_NUMBER(peek(vm, 0)) && IS_NUMBER(peek(vm, 1))) {
                     double b = AS_NUMBER(pop(vm));
                     double a = AS_NUMBER(pop(vm));
@@ -338,13 +347,13 @@ static InterpretResult run(VM* vm) {
             }
             case OP_CLOSURE: {
                 ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
-                ObjClosure* closure = newClosure(vm, function);
+                ObjClosure* closure = newClosure(vm, compiler, function);
                 push(vm, OBJ_VAL(closure));
                 for (int i = 0; i < closure->upvalueCount; i++) {
                     uint8_t isLocal = READ_BYTE();
                     uint8_t index = READ_BYTE();
                     if (isLocal) {
-                        closure->upvalues[i] = captureUpvalue(vm, frame->slots + index);
+                        closure->upvalues[i] = captureUpvalue(vm, compiler, frame->slots + index);
                     } else {
                         closure->upvalues[i] = frame->closure->upvalues[index];
                     }
@@ -380,17 +389,17 @@ static InterpretResult run(VM* vm) {
 #undef BINARY_OP
 }
 
-InterpretResult interpret(VM* vm, const char* source) {
-    ObjFunction* function = compile(vm, source);
+InterpretResult interpret(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, const char* source) {
+    ObjFunction* function = compile(vm, compiler, parser, scanner, source);
     if (function == NULL) return INTERPRET_COMPILE_ERROR;
 
     push(vm, OBJ_VAL(function));
-    ObjClosure* closure = newClosure(vm, function);
+    ObjClosure* closure = newClosure(vm, compiler, function);
     pop(vm);
     push(vm, OBJ_VAL(closure));
     call(vm, closure, 0);
 
-    return run(vm);
+    return run(vm, compiler);
 }
 
 void push(VM* vm, Value value) {

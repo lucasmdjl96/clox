@@ -22,60 +22,18 @@
 #define AS_STRING(value) ((ObjString*)AS_OBJ(value))
 #define AS_CSTRING(value) (((ObjString*)AS_OBJ(value))->chars)
 
-typedef enum {
-    OBJ_CLOSURE,
-    OBJ_FUNCTION,
-    OBJ_NATIVE,
-    OBJ_STRING,
-    OBJ_UPVALUE,
-} ObjType;
-
-struct Obj {
-    ObjType type;
-    struct Obj* next;
-};
-
-typedef struct {
-     Obj obj;
-     int arity;
-     int upvalueCount;
-     Chunk chunk;
-     ObjString* name;
-} ObjFunction;
-
-typedef Value (*NativeFn)(int argCount, Value* args);
-
-typedef struct {
-    Obj obj;
-    int arity;
-    NativeFn function;
-} ObjNative;
-
-struct ObjString {
-    Obj obj;
-    int length;
-    char* chars;
-    uint32_t hash;
-};
-
-typedef struct ObjUpvalue {
-    Obj obj;
-    Value* location;
-    Value closed;
-    struct ObjUpvalue* next;
-} ObjUpvalue;
-
-typedef struct {
-    Obj obj;
-    ObjFunction* function;
-    ObjUpvalue** upvalues;
-    int upvalueCount;
-} ObjClosure;
 
 void printObject(Value value);
 
 static inline bool isObjType(Value value, ObjType type) {
     return IS_OBJ(value) && AS_OBJ(value)->type == type;
 }
+
+ObjClosure* newClosure(VM* vm, Compiler* compiler, ObjFunction* function);
+ObjFunction* newFunction(VM* vm, Compiler* compiler);
+ObjNative* newNative(VM* vm, Compiler* compiler, NativeFn function, int arity);
+ObjString* takeString(VM* vm, Compiler* compiler, char* chars, int length);
+ObjString* copyString(VM* vm, Compiler* compiler, const char* chars, int length);
+ObjUpvalue* newUpvalue(VM*, Compiler* compiler, Value* slot);
 
 #endif //CLOX_OBJECT_H

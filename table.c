@@ -5,7 +5,6 @@
 
 #include <string.h>
 #include "memory.h"
-#include "object.h"
 #include "value.h"
 #include "table.h"
 
@@ -16,7 +15,7 @@ void initTable(Table* table) {
     table->capacity = 0;
     table->entries = NULL;
 }
-void freeTable(Table* table) {
+void freeTable(VM* vm, Compiler* compiler, Table* table) {
     FREE_ARRAY(Entry, table->entries, table->capacity);
     initTable(table);
 }
@@ -51,7 +50,7 @@ bool tableGet(Table* table, ObjString* key, Value* value) {
     *value = entry->value;
     return true;
 }
-static void adjustCapacity(Table* table, int capacity) {
+static void adjustCapacity(VM* vm, Compiler* compiler, Table* table, int capacity) {
     Entry* entries = ALLOCATE(Entry, capacity);
     for (int i = 0; i < capacity; i++) {
         entries[i].key = NULL;
@@ -73,10 +72,10 @@ static void adjustCapacity(Table* table, int capacity) {
     table->entries = entries;
     table->capacity = capacity;
 }
-bool tableSet(Table* table, ObjString* key, Value value) {
+bool tableSet(VM* vm, Compiler* compiler, Table* table, ObjString* key, Value value) {
     if (table->count + 1 > table->capacity * TABLE_MAX_LOAD) {
         int capacity = GROW_CAPACITY(table->capacity);
-        adjustCapacity(table, capacity);
+        adjustCapacity(vm, compiler, table, capacity);
     }
 
     Entry* entry = findEntry(table->entries, table->capacity, key);
@@ -99,11 +98,11 @@ bool tableDelete(Table* table, ObjString* key) {
     entry->value = BOOL_VAL(true);
     return true;
 }
-void tableAddAll(Table* from, Table* to) {
+void tableAddAll(VM* vm, Compiler* compiler, Table* from, Table* to) {
     for (int i = 0; i < from->capacity; i++) {
         Entry* entry = &from->entries[i];
         if (entry->key != NULL) {
-            tableSet(to, entry->key, entry->value);
+            tableSet(vm, compiler, to, entry->key, entry->value);
         }
     }
 }
@@ -124,5 +123,22 @@ ObjString* tableFindString(Table* table, const char* chars, int length, uint32_t
         }
 
         index = (index + 1) % table->capacity;
+    }
+}
+
+void tableRemoveWhite(Table* table) {
+    for (int i = 0; i < table->capacity; i++) {
+        Entry* entry = &table->entries[i];
+        if (entry->key != NULL && !entry->key->obj.isMarked) {
+            tableDelete(table, entry->key);
+        }
+    }
+}
+
+void markTable(VM* vm, Table* table) {
+    for (int i = 0; i < table->capacity; i++) {
+        Entry* entry = &table->entries[i];
+        markObject(vm, (Obj*)entry->key);
+        markValue(vm, entry->value);
     }
 }

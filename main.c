@@ -1,14 +1,21 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "common.h"
 #include "chunk.h"
-#include "debug.h"
 #include "vm.h"
+#include "scanner.h"
+#include "compiler.h"
 
-static void repl(VM* vm) {
+static void repl() {
+    Parser parser;
+    initParser(&parser);
+    VM vm;
+    initVM(&vm);
+    Compiler compiler;
+    initCompiler(&vm, NULL, &compiler, &parser, TYPE_SCRIPT);
+    defineClockNative(&vm, &compiler);
     char line[1024];
     setvbuf(stdout, NULL, _IONBF, 0);
     for (;;) {
@@ -19,8 +26,12 @@ static void repl(VM* vm) {
             break;
         }
 
-        interpret(vm, line);
+        Scanner scanner;
+        initScanner(&scanner, line);
+
+        interpret(&vm, &compiler, &parser, &scanner, line);
     }
+    freeVM(&vm, &compiler);
 }
 
 static char* readFile(const char* path) {
@@ -52,28 +63,35 @@ static char* readFile(const char* path) {
     return buffer;
 }
 
-static void runFile(VM* vm, const char* path) {
+static void runFile(const char* path) {
     char* source = readFile(path);
-    InterpretResult result = interpret(vm, source);
+    Scanner scanner;
+    initScanner(&scanner, source);
+    Parser parser;
+    initParser(&parser);
+    VM vm;
+    initVM(&vm);
+    Compiler compiler;
+    initCompiler(&vm, NULL, &compiler, &parser, TYPE_SCRIPT);
+    defineClockNative(&vm, &compiler);
+    InterpretResult result = interpret(&vm, &compiler, &parser, &scanner, source);
     free(source);
 
     if (result == INTERPRET_COMPILE_ERROR) exit(65);
     if (result == INTERPRET_RUNTIME_ERROR) exit(70);
+    freeVM(&vm, &compiler);
 }
 
 int main(int argc, const char* argv[]) {
-    VM vm;
-    initVM(&vm);
 
     if (argc == 1) {
-        repl(&vm);
+        repl();
     } else if (argc == 2) {
-        runFile(&vm, argv[1]);
+        runFile(argv[1]);
     } else {
         fprintf(stderr, "Usage: clox [path]\n");
         exit(64);
     }
 
-    freeVM(&vm);
     return 0;
 }

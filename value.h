@@ -7,24 +7,6 @@
 
 #include "common.h"
 
-typedef struct Obj Obj;
-typedef struct ObjString ObjString;
-
-typedef enum {
-    VAL_BOOL,
-    VAL_NIL,
-    VAL_NUMBER,
-    VAL_OBJ,
-} ValueType;
-
-typedef struct {
-    ValueType type;
-    union {
-        bool boolean;
-        double number;
-        Obj* obj;
-    } as;
-} Value;
 
 #define IS_BOOL(value) ((value).type == VAL_BOOL)
 #define IS_NIL(value) ((value).type == VAL_NIL)
@@ -40,16 +22,11 @@ typedef struct {
 #define NUMBER_VAL(value) ((Value){VAL_NUMBER, {.number = value}})
 #define OBJ_VAL(value) ((Value){VAL_OBJ, {.obj = (Obj*)value}})
 
-typedef struct {
-    int capacity;
-    int count;
-    Value* values;
-} ValueArray;
 
 bool valuesEqual(Value a, Value b);
 void initValueArray(ValueArray* array);
-void writeValueArray(ValueArray* array, Value value);
-void freeValueArray(ValueArray* array);
+void writeValueArray(VM* vm, Compiler* compiler, ValueArray* array, Value value);
+void freeValueArray(VM* vm, Compiler* compiler, ValueArray* array);
 void printValue(Value value);
 
 #endif //CLOX_VALUE_H

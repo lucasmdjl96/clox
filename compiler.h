@@ -9,40 +9,9 @@
 #include "scanner.h"
 #include "object.h"
 
-typedef struct {
-    Token current;
-    Token previous;
-    bool hadError;
-    bool panicMode;
-} Parser;
-
-typedef struct {
-    Token name;
-    int depth;
-    bool isCaptured;
-} Local;
-
-typedef struct {
-    uint8_t index;
-    bool isLocal;
-} Upvalue;
-
-typedef enum {
-    TYPE_FUNCTION,
-    TYPE_SCRIPT,
-} FunctionType;
-
-typedef struct Compiler {
-    struct Compiler* enclosing;
-    ObjFunction* function;
-    FunctionType type;
-
-    Local locals[UINT8_COUNT];
-    int localCount;
-    Upvalue upvalues[UINT8_COUNT];
-    int scopeDepth;
-} Compiler;
-
-ObjFunction* compile(VM* vm, const char* source);
+void initParser(Parser* parser);
+void initCompiler(VM* vm, Compiler* current, Compiler* compiler, Parser* parser, FunctionType type);
+ObjFunction* compile(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, const char* source);
+void markCompilerRoots(VM* vm, Compiler* compiler);
 
 #endif //CLOX_COMPILER_H
