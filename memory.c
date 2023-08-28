@@ -75,6 +75,11 @@ static void blackenObject(VM* vm, Obj* object) {
 #endif
 
     switch (object->type) {
+        case OBJ_CLASS: {
+            ObjClass* klass = (ObjClass*)object;
+            markObject(vm, (Obj*)klass->name);
+            break;
+        }
         case OBJ_CLOSURE: {
             ObjClosure* closure = (ObjClosure*)object;
             markObject(vm, (Obj*)closure->function);
@@ -87,6 +92,12 @@ static void blackenObject(VM* vm, Obj* object) {
             ObjFunction* function = (ObjFunction*)object;
             markObject(vm, (Obj*)function->name);
             markArray(vm, &function->chunk.constants);
+            break;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance* instance = (ObjInstance*)object;
+            markObject(vm, (Obj*)instance->klass);
+            markTable(vm, &instance->fields);
             break;
         }
         case OBJ_UPVALUE:
@@ -104,6 +115,10 @@ static void freeObject(VM* vm, Compiler* compiler, Obj* object) {
 #endif
 
     switch (object->type) {
+        case OBJ_CLASS: {
+            FREE(ObjClass, object);
+            break;
+        }
         case OBJ_CLOSURE: {
             ObjClosure* closure = (ObjClosure*)object;
             FREE_ARRAY(ObjUpvalue*, closure->upvalues, closure->upvalueCount);
@@ -114,6 +129,12 @@ static void freeObject(VM* vm, Compiler* compiler, Obj* object) {
             ObjFunction* function = (ObjFunction*)object;
             freeChunk(vm, compiler, &function->chunk);
             FREE(ObjFunction, object);
+            break;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance* instance = (ObjInstance*)object;
+            freeTable(vm, compiler, &instance->fields);
+            FREE(ObjInstance, object);
             break;
         }
         case OBJ_NATIVE: {

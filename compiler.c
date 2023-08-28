@@ -257,6 +257,22 @@ static void call(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, b
     emitBytes(vm, compiler, parser, OP_CALL, argCount);
 }
 
+static uint8_t identifierConstant(VM* vm, Compiler* compiler, Parser* parser, Token* name) {
+    return makeConstant(vm, compiler, parser, OBJ_VAL(copyString(vm, compiler, name->start, name->length)));
+}
+
+static void dot(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, bool canAssign) {
+    consume(parser, scanner, TOKEN_IDENTIFIER, "Expect property name after '.'.");
+    uint8_t name = identifierConstant(vm, compiler, parser, &parser->previous);
+
+    if (canAssign && match(parser, scanner, TOKEN_EQUAL)) {
+        expression(vm, compiler, parser, scanner);
+        emitBytes(vm, compiler, parser, OP_SET_PROPERTY, name);
+    } else {
+        emitBytes(vm, compiler, parser, OP_GET_PROPERTY, name);
+    }
+}
+
 static void literal(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, bool canAssign) {
     switch (parser->previous.type) {
         case TOKEN_FALSE:
@@ -308,10 +324,6 @@ static void and_(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, b
 static void string(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner, bool canAssign) {
     emitConstant(vm, compiler, parser, OBJ_VAL(copyString(vm, compiler, parser->previous.start + 1,
                                                           parser->previous.length - 2)));
-}
-
-static uint8_t identifierConstant(VM* vm, Compiler* compiler, Parser* parser, Chunk* currentChunk, Token* name) {
-    return makeConstant(vm, compiler, parser, OBJ_VAL(copyString(vm, compiler, name->start, name->length)));
 }
 
 static bool identifiersEqual(Token* a, Token* b) {
@@ -411,7 +423,7 @@ static void namedVariable(VM* vm, Compiler* compiler, Parser* parser, Scanner* s
         getOp = OP_GET_UPVALUE;
         setOp = OP_SET_UPVALUE;
     } else {
-        arg = identifierConstant(vm, compiler, parser, currentChunk(compiler), &name);
+        arg = identifierConstant(vm, compiler, parser, &name);
         getOp = OP_GET_GLOBAL;
         setOp = OP_SET_GLOBAL;
     }
@@ -453,7 +465,7 @@ ParseRule rules[] = {
     [TOKEN_LEFT_BRACE] = {NULL, NULL, PREC_NONE},
     [TOKEN_RIGHT_BRACE] = {NULL, NULL, PREC_NONE},
     [TOKEN_COMMA] = {NULL, NULL, PREC_NONE},
-    [TOKEN_DOT] = {NULL, NULL, PREC_NONE},
+    [TOKEN_DOT] = {NULL, dot, PREC_CALL},
     [TOKEN_MINUS] = {unary, binary, PREC_TERM},
     [TOKEN_PLUS] = {NULL, binary, PREC_TERM},
     [TOKEN_SEMICOLON] = {NULL, NULL, PREC_NONE},
@@ -519,7 +531,7 @@ static uint8_t parseVariable(VM* vm, Compiler* compiler, Parser* parser, Scanner
     declareVariable(compiler, parser);
     if (compiler->scopeDepth > 0) return 0;
 
-    return identifierConstant(vm, compiler, parser, currentChunk(compiler), &parser->previous);
+    return identifierConstant(vm, compiler, parser, &parser->previous);
 }
 
 static void markInitialized(Compiler* compiler) {
@@ -598,6 +610,18 @@ static void function(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanne
         emitByte(vm, compiler, parser, newCompiler.upvalues[i].isLocal ? 1 : 0);
         emitByte(vm, compiler, parser, newCompiler.upvalues[i].index);
     }
+}
+
+static void classDeclaration(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner) {
+    consume(parser, scanner, TOKEN_IDENTIFIER, "Expect class name.");
+    uint8_t nameConstant = identifierConstant(vm, compiler, parser, &parser->previous);
+    declareVariable(compiler, parser);
+
+    emitBytes(vm, compiler, parser, OP_CLASS, nameConstant);
+    defineVariable(vm, compiler, parser, nameConstant);
+
+    consume(parser, scanner, TOKEN_LEFT_BRACE, "Expect '{' before class body.");
+    consume(parser, scanner, TOKEN_RIGHT_BRACE, "Expect '}' after class body.");
 }
 
 static void funDeclaration(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner) {
@@ -753,7 +777,9 @@ static void synchronize(Parser* parser, Scanner* scanner) {
 }
 
 static void declaration(VM* vm, Compiler* compiler, Parser* parser, Scanner* scanner) {
-    if (match(parser, scanner, TOKEN_FUN)) {
+    if (match(parser, scanner, TOKEN_CLASS)) {
+        classDeclaration(vm, compiler, parser, scanner);
+    } else if (match(parser, scanner, TOKEN_FUN)) {
         funDeclaration(vm, compiler, parser, scanner);
     } else if (match(parser, scanner, TOKEN_VAR)) {
         varDeclaration(vm, compiler, parser, scanner);

@@ -99,9 +99,14 @@ static bool call(VM* vm, ObjClosure* closure, int argCount) {
     return true;
 }
 
-static bool callValue(VM* vm, Value callee, int argCount) {
+static bool callValue(VM* vm, Compiler* compiler, Value callee, int argCount) {
     if (IS_OBJ(callee)) {
         switch (OBJ_TYPE(callee)) {
+            case OBJ_CLASS: {
+                ObjClass* klass = AS_CLASS(callee);
+                vm->stackTop[-argCount - 1] = OBJ_VAL(newInstance(vm, compiler, klass));
+                return true;
+            }
             case OBJ_CLOSURE:
                 return call(vm, AS_CLOSURE(callee), argCount);
             case OBJ_NATIVE: {
@@ -269,6 +274,37 @@ static InterpretResult run(VM* vm, Compiler* compiler) {
                 *frame->closure->upvalues[slot]->location = peek(vm, 0);
                 break;
             }
+            case OP_GET_PROPERTY: {
+                if (!IS_INSTANCE(peek(vm, 0))) {
+                    runtimeError(vm, "Only instance have properties.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                ObjInstance* instance = AS_INSTANCE(peek(vm, 0));
+                ObjString* name = READ_STRING();
+
+                Value value;
+                if (tableGet(&instance->fields, name, &value)) {
+                    pop(vm); // Instance
+                    push(vm, value);
+                    break;
+                }
+
+                runtimeError(vm, "Undefined property '%s'.", name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            case OP_SET_PROPERTY: {
+                if (!IS_INSTANCE(peek(vm, 1))) {
+                    runtimeError(vm, "Only instances have fields.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                ObjInstance* instance = AS_INSTANCE(peek(vm, 1));
+                tableSet(vm, compiler, &instance->fields, READ_STRING(), peek(vm, 0));
+                Value value = pop(vm);
+                pop(vm); // Instance
+                push(vm, value);
+                break;
+            }
             case OP_EQUAL: {
                 Value b = pop(vm);
                 Value a = pop(vm);
@@ -339,7 +375,7 @@ static InterpretResult run(VM* vm, Compiler* compiler) {
             }
             case OP_CALL: {
                 int argCount = READ_BYTE();
-                if (!callValue(vm, peek(vm, argCount), argCount)) {
+                if (!callValue(vm, compiler, peek(vm, argCount), argCount)) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 frame = &vm->frames[vm->frameCount - 1];
@@ -379,6 +415,9 @@ static InterpretResult run(VM* vm, Compiler* compiler) {
                 frame = &vm->frames[vm->frameCount - 1];
                 break;
             }
+            case OP_CLASS:
+                push(vm, OBJ_VAL(newClass(vm, compiler, READ_STRING())));
+                break;
         }
     }
 

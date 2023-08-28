@@ -9,11 +9,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define DEBUG_PRINT_CODE
+//#define DEBUG_PRINT_CODE
 //#define DEBUG_TRACE_EXECUTION
 
-#define DEBUG_STRESS_GC
-#define DEBUG_LOG_GC
+//#define DEBUG_STRESS_GC
+//#define DEBUG_LOG_GC
 
 #define UINT8_COUNT (UINT8_MAX + 1)
 
@@ -72,6 +72,8 @@ typedef enum {
     OP_GET_GLOBAL,
     OP_DEFINE_GLOBAL,
     OP_SET_GLOBAL,
+    OP_GET_PROPERTY,
+    OP_SET_PROPERTY,
     OP_EQUAL,
     OP_GREATER,
     OP_LESS,
@@ -89,11 +91,14 @@ typedef enum {
     OP_CLOSURE,
     OP_CLOSE_UPVALUE,
     OP_RETURN,
+    OP_CLASS,
 } OpCode;
 
 typedef enum {
+    OBJ_CLASS,
     OBJ_CLOSURE,
     OBJ_FUNCTION,
+    OBJ_INSTANCE,
     OBJ_NATIVE,
     OBJ_STRING,
     OBJ_UPVALUE,
@@ -173,6 +178,28 @@ typedef struct {
 } ObjClosure;
 
 typedef struct {
+    Obj obj;
+    ObjString* name;
+} ObjClass;
+
+typedef struct {
+    ObjString* key;
+    Value value;
+} Entry;
+
+typedef struct {
+    int count;
+    int capacity;
+    Entry* entries;
+} Table;
+
+typedef struct {
+    Obj obj;
+    ObjClass* klass;
+    Table fields;
+} ObjInstance;
+
+typedef struct {
     Token name;
     int depth;
     bool isCaptured;
@@ -198,17 +225,6 @@ typedef struct Compiler {
     Upvalue upvalues[UINT8_COUNT];
     int scopeDepth;
 } Compiler;
-
-typedef struct {
-    ObjString* key;
-    Value value;
-} Entry;
-
-typedef struct {
-    int count;
-    int capacity;
-    Entry* entries;
-} Table;
 
 typedef struct {
     ObjClosure* closure;
