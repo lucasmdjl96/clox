@@ -15,6 +15,8 @@ static void repl() {
     initVM(&vm);
     Compiler compiler;
     initCompiler(&vm, NULL, &compiler, &parser, TYPE_SCRIPT);
+    vm.initString = NULL;
+    vm.initString = copyString(&vm, &compiler, "init", 4);
     defineClockNative(&vm, &compiler);
     char line[1024];
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -73,6 +75,8 @@ static void runFile(const char* path) {
     initVM(&vm);
     Compiler compiler;
     initCompiler(&vm, NULL, &compiler, &parser, TYPE_SCRIPT);
+    vm.initString = NULL;
+    vm.initString = copyString(&vm, &compiler, "init", 4);
     defineClockNative(&vm, &compiler);
     InterpretResult result = interpret(&vm, &compiler, &parser, &scanner, source);
     free(source);

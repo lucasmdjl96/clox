@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 //#define DEBUG_PRINT_CODE
-//#define DEBUG_TRACE_EXECUTION
+#define DEBUG_TRACE_EXECUTION
 
 //#define DEBUG_STRESS_GC
 //#define DEBUG_LOG_GC
@@ -88,13 +88,16 @@ typedef enum {
     OP_JUMP_IF_FALSE,
     OP_LOOP,
     OP_CALL,
+    OP_INVOKE,
     OP_CLOSURE,
     OP_CLOSE_UPVALUE,
     OP_RETURN,
     OP_CLASS,
+    OP_METHOD,
 } OpCode;
 
 typedef enum {
+    OBJ_BOUND_METHOD,
     OBJ_CLASS,
     OBJ_CLOSURE,
     OBJ_FUNCTION,
@@ -178,11 +181,6 @@ typedef struct {
 } ObjClosure;
 
 typedef struct {
-    Obj obj;
-    ObjString* name;
-} ObjClass;
-
-typedef struct {
     ObjString* key;
     Value value;
 } Entry;
@@ -195,9 +193,21 @@ typedef struct {
 
 typedef struct {
     Obj obj;
+    ObjString* name;
+    Table methods;
+} ObjClass;
+
+typedef struct {
+    Obj obj;
     ObjClass* klass;
     Table fields;
 } ObjInstance;
+
+typedef struct {
+    Obj obj;
+    Value receiver;
+    ObjClosure* method;
+} ObjBoundMethod;
 
 typedef struct {
     Token name;
@@ -212,6 +222,8 @@ typedef struct {
 
 typedef enum {
     TYPE_FUNCTION,
+    TYPE_INITIALIZER,
+    TYPE_METHOD,
     TYPE_SCRIPT,
 } FunctionType;
 
@@ -225,6 +237,10 @@ typedef struct Compiler {
     Upvalue upvalues[UINT8_COUNT];
     int scopeDepth;
 } Compiler;
+
+typedef struct ClassCompiler {
+    struct ClassCompiler* enclosing;
+} ClassCompiler;
 
 typedef struct {
     ObjClosure* closure;
@@ -243,6 +259,7 @@ typedef struct {
     Value* stackTop;
     Table globals;
     Table strings;
+    ObjString* initString;
     ObjUpvalue* openUpvalues;
 
     size_t bytesAllocated;

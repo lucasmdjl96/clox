@@ -12,6 +12,10 @@
 #include "object.h"
 #include "memory.h"
 
+#ifdef DEBUG_TRACE_EXECUTION
+#include "debug.h"
+#endif
+
 
 static void resetStack(VM* vm) {
     vm->stackTop = vm->stack;
@@ -74,6 +78,7 @@ void defineClockNative(VM* vm, Compiler* compiler) {
 void freeVM(VM* vm, Compiler* compiler) {
     freeTable(vm, compiler, &vm->strings);
     freeTable(vm, compiler, &vm->globals);
+    vm->initString = NULL;
     freeObjects(vm, compiler);
 }
 
@@ -102,9 +107,21 @@ static bool call(VM* vm, ObjClosure* closure, int argCount) {
 static bool callValue(VM* vm, Compiler* compiler, Value callee, int argCount) {
     if (IS_OBJ(callee)) {
         switch (OBJ_TYPE(callee)) {
+            case OBJ_BOUND_METHOD: {
+                ObjBoundMethod* bound = AS_BOUND_METHOD(callee);
+                vm->stackTop[-argCount - 1] = bound->receiver;
+                return call(vm, bound->method, argCount);
+            }
             case OBJ_CLASS: {
                 ObjClass* klass = AS_CLASS(callee);
                 vm->stackTop[-argCount - 1] = OBJ_VAL(newInstance(vm, compiler, klass));
+                Value initializer;
+                if (tableGet(&klass->methods, vm->initString, &initializer)) {
+                    return call(vm, AS_CLOSURE(initializer), argCount);
+                } else if (argCount != 0) {
+                    runtimeError(vm, "Expected 0 arguments but got %d.", argCount);
+                    return false;
+                }
                 return true;
             }
             case OBJ_CLOSURE:
@@ -126,6 +143,45 @@ static bool callValue(VM* vm, Compiler* compiler, Value callee, int argCount) {
     }
     runtimeError(vm, "Can only call closure and classes.");
     return false;
+}
+
+static bool invokeFromClass(VM* vm, ObjClass* klass, ObjString* name, int argCount) {
+    Value method;
+    if (!tableGet(&klass->methods, name, &method)) {
+        runtimeError(vm, "Undefined property '%s'.", name->chars);
+        return false;
+    }
+    return call(vm, AS_CLOSURE(method), argCount);
+}
+
+static bool invoke(VM* vm, Compiler* compiler, ObjString* name, int argCount) {
+    Value receiver = peek(vm, argCount);
+    if (!IS_INSTANCE(receiver)) {
+        runtimeError(vm, "Only instances have methods.");
+        return false;
+    }
+    ObjInstance* instance = AS_INSTANCE(receiver);
+
+    Value value;
+    if (tableGet(&instance->fields, name, &value)) {
+        vm->stackTop[-argCount - 1] = value;
+        return callValue(vm, compiler, value, argCount);
+    }
+
+    return invokeFromClass(vm, instance->klass, name, argCount);
+}
+
+static bool bindMethod(VM* vm, Compiler* compiler, ObjClass* klass, ObjString* name) {
+    Value method;
+    if (!tableGet(&klass->methods, name, &method)) {
+        runtimeError(vm, "Undefined property '%s'.", name->chars);
+        return false;
+    }
+
+    ObjBoundMethod* bound = newBoundMethod(vm, compiler, peek(vm, 0), AS_CLOSURE(method));
+    pop(vm);
+    push(vm, OBJ_VAL(bound));
+    return true;
 }
 
 static ObjUpvalue* captureUpvalue(VM* vm, Compiler* compiler, Value* local) {
@@ -161,13 +217,20 @@ static void closeUpvalues(VM* vm, Value* last) {
     }
 }
 
+static void defineMethod(VM* vm, Compiler* compiler, ObjString* name) {
+    Value method = peek(vm, 0);
+    ObjClass* klass = AS_CLASS(peek(vm, 1));
+    tableSet(vm, compiler, &klass->methods, name, method);
+    pop(vm);
+}
+
 static bool isFalsey(Value value) {
     return IS_NIL(value) || (IS_BOOL(value) && !AS_BOOL(value));
 }
 
 static void concatenate(VM* vm, Compiler* compiler) {
     ObjString* b = AS_STRING(peek(vm, 0));
-    ObjString* a = AS_STRING(peek(vm, 0));
+    ObjString* a = AS_STRING(peek(vm, 1));
 
     int length = a->length + b->length;
     char* chars = ALLOCATE(char, length + 1);
@@ -290,8 +353,10 @@ static InterpretResult run(VM* vm, Compiler* compiler) {
                     break;
                 }
 
-                runtimeError(vm, "Undefined property '%s'.", name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                if (!bindMethod(vm, compiler, instance->klass, name)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                break;
             }
             case OP_SET_PROPERTY: {
                 if (!IS_INSTANCE(peek(vm, 1))) {
@@ -381,6 +446,15 @@ static InterpretResult run(VM* vm, Compiler* compiler) {
                 frame = &vm->frames[vm->frameCount - 1];
                 break;
             }
+            case OP_INVOKE: {
+                ObjString* method = READ_STRING();
+                int argCount = READ_BYTE();
+                if (!invoke(vm, compiler, method, argCount)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                frame = &vm->frames[vm->frameCount - 1];
+                break;
+            }
             case OP_CLOSURE: {
                 ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
                 ObjClosure* closure = newClosure(vm, compiler, function);
@@ -417,6 +491,9 @@ static InterpretResult run(VM* vm, Compiler* compiler) {
             }
             case OP_CLASS:
                 push(vm, OBJ_VAL(newClass(vm, compiler, READ_STRING())));
+                break;
+            case OP_METHOD:
+                defineMethod(vm, compiler, READ_STRING());
                 break;
         }
     }
