@@ -9,8 +9,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define NAN_BOXING
 //#define DEBUG_PRINT_CODE
-#define DEBUG_TRACE_EXECUTION
+//#define DEBUG_TRACE_EXECUTION
 
 //#define DEBUG_STRESS_GC
 //#define DEBUG_LOG_GC
@@ -123,6 +124,12 @@ typedef enum {
     VAL_OBJ,
 } ValueType;
 
+#ifdef NAN_BOXING
+
+typedef uint64_t Value;
+
+#else
+
 typedef struct {
     ValueType type;
     union {
@@ -131,6 +138,8 @@ typedef struct {
         Obj* obj;
     } as;
 } Value;
+
+#endif
 
 typedef struct {
     int capacity;
