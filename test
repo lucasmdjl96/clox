@@ -1,15 +1,19 @@
-class CoffeeMaker {
-  init(coffee) {
-    this.coffee = coffee;
+class Doughnut {
+  cook() {
+    print "Dunk in the fryer.";
+    this.finish("sprinkles");
   }
 
-  brew() {
-    print "Enjoy your cup of " + this.coffee;
-
-    // No reusing the grounds!
-    this.coffee = nil;
+  finish(ingredient) {
+    print "Finish with " + ingredient;
   }
 }
 
-var maker = CoffeeMaker("coffee and chicory");
-maker.brew();
+class Cruller < Doughnut {
+  finish(ingredient) {
+    // No sprinkles, always icing.
+    super.finish("icing");
+  }
+}
+
+Cruller().cook();
